@@ -29,11 +29,14 @@ st.markdown("""
     .stButton>button {
         background-color: #d97706; color: white; border: none; font-weight: bold;
     }
+    .stButton>button:hover {
+        background-color: #b45309; color: white;
+    }
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. GOOGLE SHEETS ENGINE (NOW HANDLES USERS)
+# 2. GOOGLE SHEETS ENGINE
 # ==========================================
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
@@ -52,11 +55,9 @@ def get_main_sheet():
     sheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
     return client.open_by_url(sheet_url).sheet1
 
-# NEW: Connect to the 'Users' tab
 def get_users_sheet():
     client = get_client()
     sheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
-    # Tries to find a worksheet named 'Users'. If not found, returns None.
     try:
         return client.open_by_url(sheet_url).worksheet("Users")
     except:
@@ -97,15 +98,23 @@ def save_data(df):
         time.sleep(1)
     except Exception as e: st.error(f"Save Error: {e}")
 
-# NEW: Load Users Data
+# --- USER LOADING (FIXED FOR TEXT/NUMBER BUG) ---
 def load_users():
     try:
         wks = get_users_sheet()
         data = wks.get_all_records()
-        return pd.DataFrame(data)
-    except: return pd.DataFrame(columns=["username", "password", "role", "name"])
+        df = pd.DataFrame(data)
+        
+        # CRITICAL FIX: Convert everything to string to prevent mismatch
+        df = df.astype(str)
+        
+        # Remove accidental spaces
+        if 'username' in df.columns: df['username'] = df['username'].str.strip()
+        if 'password' in df.columns: df['password'] = df['password'].str.strip()
+        return df
+    except: 
+        return pd.DataFrame(columns=["username", "password", "role", "name"])
 
-# NEW: Get List of Users by Role (for Dropdowns)
 def get_users_by_role(role_name):
     users_df = load_users()
     if not users_df.empty and "role" in users_df.columns:
@@ -235,15 +244,15 @@ def authorizer_view(user):
             idx = df[df['lg_number']==sel].index[0]; row = df.iloc[idx]
             with st.form("edit_active"):
                 c1, c2, c3 = st.columns(3)
-                # DYNAMIC LIST
                 all_inps = get_users_by_role("Inputter")
-                with c1: n_inp=st.selectbox("Inputter", all_inps, index=get_index(all_inps, row['inputter'])); n_md=st.text_input("MD", row['md_ref'])
-                with c2: n_cbe=st.text_input("CBE", row['cbe_serial']); n_comm=st.text_input("Comm Amt", row['comm_amount'])
+                with c1: n_inp=st.selectbox("Inputter", all_inps, index=get_index(all_inps, row['inputter'])); n_md=st.text_input("MD", row['md_ref']); n_chg=st.text_input("Comm CHG", row['comm_chg_ref'])
+                with c2: n_cbe=st.text_input("CBE", row['cbe_serial']); n_comm=st.text_input("Comm Amt", row['comm_amount']); n_fs=st.checkbox("File Sent", value=(float(row['file_sent'])==1))
                 with c3: n_stat=st.selectbox("Status", COMM_OPTS, index=get_index(COMM_OPTS, row['comm_status'])); n_pno=st.text_input("Postage", row['postage_number'])
                 
                 if st.form_submit_button("Save"):
-                    df.at[idx,'inputter']=n_inp; df.at[idx,'md_ref']=n_md; df.at[idx,'cbe_serial']=n_cbe
-                    df.at[idx,'comm_amount']=n_comm; df.at[idx,'comm_status']=n_stat; df.at[idx,'postage_number']=n_pno
+                    df.at[idx,'inputter']=n_inp; df.at[idx,'md_ref']=n_md; df.at[idx,'comm_chg_ref']=n_chg
+                    df.at[idx,'cbe_serial']=n_cbe; df.at[idx,'comm_amount']=n_comm; df.at[idx,'file_sent']=1 if n_fs else 0
+                    df.at[idx,'comm_status']=n_stat; df.at[idx,'postage_number']=n_pno
                     save_data(df); st.rerun()
 
     # 3. REVIEW
@@ -254,15 +263,17 @@ def authorizer_view(user):
             sel = st.selectbox("Select to Action", my_tasks['lg_number'].unique())
             row = my_tasks[my_tasks['lg_number']==sel].iloc[0]; idx = df[df['task_id']==row['task_id']].index[0]
             with st.form("review_form"):
-                c1, c2 = st.columns(2)
-                with c1: e_md=st.text_input("MD", row['md_ref']); e_comm=st.text_input("Comm", row['comm_amount'])
+                c1, c2, c3 = st.columns(3)
+                with c1: e_md=st.text_input("MD", row['md_ref']); e_comm=st.text_input("Comm", row['comm_amount']); e_chg=st.text_input("Comm CHG", row['comm_chg_ref'])
                 with c2: e_st=st.selectbox("Comm Stat", COMM_OPTS, index=get_index(COMM_OPTS, row['comm_status'])); e_fs=st.checkbox("File Sent?")
+                with c3: e_post=st.text_input("Postage", row['postage_number']); e_start=st.text_input("Start Date", row['to_be_started_on'])
                 
                 dec = st.radio("Decision", ["Approve", "Pending", "Return"], horizontal=True)
                 reas = st.text_input("Reason")
                 
                 if st.form_submit_button("Execute"):
-                    df.at[idx,'md_ref']=e_md; df.at[idx,'comm_amount']=e_comm; df.at[idx,'comm_status']=e_st
+                    df.at[idx,'md_ref']=e_md; df.at[idx,'comm_amount']=e_comm; df.at[idx,'comm_status']=e_st; df.at[idx,'comm_chg_ref']=e_chg
+                    df.at[idx,'postage_number']=e_post; df.at[idx,'to_be_started_on']=e_start
                     if dec=="Approve":
                         if not e_fs: st.error("Check File Sent")
                         else: df.at[idx,'status']='Completed'; df.at[idx,'file_sent']=1; save_data(df); st.rerun()
@@ -270,25 +281,36 @@ def authorizer_view(user):
                         df.at[idx,'status']='Pending' if dec=="Pending" else 'Active'
                         df.at[idx,'pending_reason']=reas; save_data(df); st.rerun()
 
-    # 4. GLOBAL PENDINGS
+    # 4. GLOBAL PENDINGS (SUPER EDIT)
     with tabs[3]:
         pends = df[df['status']=='Pending']
         st.dataframe(pends[['lg_number','pending_reason','inputter']], use_container_width=True)
         for i, row in pends.iterrows():
             with st.expander(f"Manage {row['lg_number']}"):
-                n_reas = st.text_input("Reason", row['pending_reason'], key=f"r{i}")
+                c1, c2 = st.columns(2)
+                with c1: 
+                    n_md = st.text_input("MD", row['md_ref'], key=f"p_md{i}")
+                    n_cbe = st.text_input("CBE", row['cbe_serial'], key=f"p_cb{i}")
+                    n_comm = st.text_input("Comm", row['comm_amount'], key=f"p_cm{i}")
+                with c2:
+                    n_fs = st.checkbox("File Sent", value=(float(row['file_sent'])==1), key=f"p_fs{i}")
+                    n_or = st.checkbox("Orig Recvd", value=(float(row['original_recvd'])==1), key=f"p_or{i}")
+                    n_reas = st.text_input("Reason", row['pending_reason'], key=f"p_r{i}")
+                
                 dest = st.radio("To", ["Inputter","Authorizer"], key=f"d{i}")
                 if st.button("Release", key=f"b{i}"):
                     idx = df[df['task_id']==row['task_id']].index[0]
+                    df.at[idx,'md_ref']=n_md; df.at[idx,'cbe_serial']=n_cbe; df.at[idx,'comm_amount']=n_comm
+                    df.at[idx,'file_sent']=1 if n_fs else 0; df.at[idx,'original_recvd']=1 if n_or else 0
                     df.at[idx,'pending_reason']=n_reas
                     df.at[idx,'status']='Active' if dest=="Inputter" else 'Ready for Auth'
                     save_data(df); st.rerun()
 
-    # 5. MISSING ORIGINALS
+    # 5. MISSING ORIGINALS (SEARCHABLE)
     with tabs[4]:
         miss = df[(df['post_type']=='Copy') & (pd.to_numeric(df['original_recvd'])==0)]
         search = st.text_input("Search Missing LG:")
-        opts = [l for l in miss['lg_number'].unique() if search in l] if search else miss['lg_number'].unique()
+        opts = [l for l in miss['lg_number'].unique() if search.lower() in l.lower()] if search else miss['lg_number'].unique()
         
         if len(opts)>0:
             sel = st.selectbox("Mark Received", opts)
@@ -335,15 +357,17 @@ def inputter_view(user):
             row = mine[mine['lg_number']==sel].iloc[0]; idx=df[df['task_id']==row['task_id']].index[0]
             with st.form("fix"):
                 n_md=st.text_input("MD", row['md_ref']); n_st=st.selectbox("Stat", COMM_OPTS, index=get_index(COMM_OPTS, row['comm_status']))
+                n_chg=st.text_input("Comm CHG", row['comm_chg_ref'])
                 if st.form_submit_button("Resubmit"):
-                    df.at[idx,'md_ref']=n_md; df.at[idx,'comm_status']=n_st; df.at[idx,'status']='Ready for Auth'
+                    df.at[idx,'md_ref']=n_md; df.at[idx,'comm_status']=n_st; df.at[idx,'comm_chg_ref']=n_chg
+                    df.at[idx,'status']='Ready for Auth'
                     save_data(df); st.rerun()
         else: st.info("Empty")
 
     with tabs[2]:
         miss = df[(df['post_type']=='Copy') & (pd.to_numeric(df['original_recvd'])==0)]
-        search = st.text_input("Search Missing:")
-        opts = [l for l in miss['lg_number'].unique() if search in l] if search else miss['lg_number'].unique()
+        search = st.text_input("Search Missing:", key="inps")
+        opts = [l for l in miss['lg_number'].unique() if search.lower() in l.lower()] if search else miss['lg_number'].unique()
         if len(opts)>0:
             sel = st.selectbox("Found", opts, key="inpm")
             dt = st.date_input("Date", key="inpd")
@@ -354,43 +378,28 @@ def inputter_view(user):
 
 def admin_view():
     st.title("⚙️ Admin Panel")
-    
-    # 1. MANAGE APP DATA
     st.subheader("📊 App Data")
     df = load_data()
     st.dataframe(df, height=200)
-    
     st.divider()
-    
-    # 2. MANAGE USERS (NEW FEATURE)
     st.subheader("👥 User Management")
-    
     users_sheet = get_users_sheet()
-    users_data = users_sheet.get_all_records()
-    users_df = pd.DataFrame(users_data)
+    users_df = pd.DataFrame(users_sheet.get_all_records()).astype(str)
     
-    t1, t2 = st.tabs(["View/Edit Users", "Add New User"])
-    
+    t1, t2 = st.tabs(["View Users", "Add New User"])
     with t1:
         st.dataframe(users_df, use_container_width=True)
-        st.info("To Edit/Delete users, please do it directly in the 'Users' tab of the Google Sheet for safety.")
-    
+        st.info("Edit users directly in Google Sheets.")
     with t2:
         with st.form("add_user"):
-            new_u = st.text_input("Username")
-            new_p = st.text_input("Password")
-            new_r = st.selectbox("Role", ["Authorizer", "Inputter", "Admin"])
-            new_n = st.text_input("Full Name")
-            
+            new_u = st.text_input("Username"); new_p = st.text_input("Password")
+            new_r = st.selectbox("Role", ["Authorizer", "Inputter", "Admin"]); new_n = st.text_input("Full Name")
             if st.form_submit_button("Add User"):
                 if new_u and new_p:
-                    # Append to Google Sheet
-                    users_sheet.append_row([new_u, new_p, new_r, new_n])
-                    st.success(f"User {new_u} added!")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error("Username and Password required")
+                    # Force password to string by adding a quote prefix or just relying on pandas read
+                    users_sheet.append_row([str(new_u), str(new_p), str(new_r), str(new_n)])
+                    st.success(f"User {new_u} added!"); time.sleep(1); st.rerun()
+                else: st.error("Required fields missing")
 
 def main():
     if "user" not in st.session_state: st.session_state.user = None
@@ -398,30 +407,28 @@ def main():
     if not st.session_state.user:
         c1,c2,c3 = st.columns([1,2,1])
         with c2:
-            st.title("🔐 Alex LG Work Flow")
+            st.title("🔐 IC Audit Pro")
             with st.form("login"):
                 u = st.text_input("Username")
                 p = st.text_input("Password", type="password")
                 if st.form_submit_button("Login"):
-                    # DYNAMIC LOGIN LOGIC
                     users_df = load_users()
                     if not users_df.empty:
-                        # Find user row
-                        match = users_df[(users_df['username'] == u) & (users_df['password'] == p)]
+                        # STRING MATCHING
+                        match = users_df[(users_df['username'] == str(u)) & (users_df['password'] == str(p))]
                         if not match.empty:
                             user_role = match.iloc[0]['role']
                             st.session_state.user = u
                             st.session_state.role = user_role
                             st.rerun()
                         else: st.error("Invalid Credentials")
-                    else: st.error("No users found in DB")
+                    else: st.error("No users found")
     else:
         with st.sidebar:
             st.write(f"User: {st.session_state.user}")
             st.write(f"Role: {st.session_state.role}")
             if st.button("Logout"):
-                st.session_state.user = None
-                st.rerun()
+                st.session_state.user = None; st.rerun()
         
         if st.session_state.role == "Admin": admin_view()
         elif st.session_state.role == "Authorizer": authorizer_view(st.session_state.user)
