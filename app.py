@@ -9,7 +9,7 @@ import time
 # ==========================================
 # 1. VISUAL SETUP
 # ==========================================
-st.set_page_config(page_title="IC Audit Pro", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Alex LG Workflow", layout="wide", page_icon="🏦")
 
 st.markdown("""
     <style>
@@ -207,7 +207,7 @@ def authorizer_view(user):
         c_d1, c_d2, c_d3 = st.columns(3)
         with c_d1:
             new_lg = st.text_input("LG Number", value=lg_search)
-            types=["Bid Bond","Performance","Advance Payment","Retention","Final","Other"]
+            types=["Bid Bond","Performance(Final)","Advance Payment","Retention","Other"]
             lgt=st.selectbox("LG Type", types, index=get_index(types, d_type))
         with c_d2:
             ptype=st.radio("Post Type", ["Original", "Copy"], horizontal=True)
@@ -407,7 +407,7 @@ def main():
     if not st.session_state.user:
         c1,c2,c3 = st.columns([1,2,1])
         with c2:
-            st.title("🔐 IC Audit Pro")
+            st.title("🔐 Alex LG Workflow")
             with st.form("login"):
                 u = st.text_input("Username")
                 p = st.text_input("Password", type="password")
