@@ -33,16 +33,14 @@ st.markdown("""
     .stButton>button:hover {
         background-color: #b45309; color: white;
     }
-    /* Danger Button Style */
-    div[data-testid="stExpander"] details summary p {
-        color: #ef4444; /* Red Text for Danger Zone */
-        font-weight: bold;
+    .stAlert {
+        background-color: #1e293b; color: #fbbf24; border: 1px solid #fbbf24;
     }
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. STABLE & CACHED GOOGLE SHEETS ENGINE
+# 2. GOOGLE SHEETS ENGINE
 # ==========================================
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
@@ -74,18 +72,19 @@ def get_users_sheet():
             return None
     return None
 
-# --- DATA LOADERS (NOW CACHED FOR SPEED) ---
+# --- DATA LOADERS ---
+# ADDED: 'in_favor_of'
 COLUMNS = [
     "task_id", "assigned_date", "branch", "post_type", "inputter", 
-    "req_type", "cif", "applicant", "beneficiary", "amount", "current_total", "currency", 
+    "req_type", "cif", "applicant", "in_favor_of", "beneficiary", "amount", "current_total", "currency", 
     "lg_number", "lg_type", "cbe_serial", "authorizer", "md_ref", 
     "postage_number", "comm_amount", "comm_status", "comm_chg_ref", "status", 
     "pending_reason", "to_be_started_on", "file_sent", "original_recvd", "original_recv_date"
 ]
 COMM_OPTS = ["", "Collected", "Pending", "Due Comm."]
 
-# CACHE ADDED HERE: Speeds up the app by not downloading data on every click
-@st.cache_data(ttl=60) 
+# CACHE SET TO 2 SECONDS FOR "LIVE" FEEL
+@st.cache_data(ttl=2) 
 def load_data():
     try:
         wks = get_main_sheet()
@@ -98,15 +97,13 @@ def load_data():
         for col in COLUMNS:
             if col not in df.columns: df[col] = ""
             
-        # Numeric Clean
         for col in ['amount', 'current_total', 'file_sent', 'original_recvd']:
              if df[col].dtype == object:
                  df[col] = df[col].astype(str).str.replace(",", "")
              df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # String Clean
         df = df.astype(str)
-        for col in ['status', 'lg_number', 'req_type']:
+        for col in ['status', 'lg_number', 'req_type', 'cif', 'applicant']:
             df[col] = df[col].str.strip()
             
         return df
@@ -120,12 +117,9 @@ def save_data(df):
             df_clean = df.fillna("")
             wks.append_row(df_clean.columns.tolist())
             wks.append_rows(df_clean.values.tolist())
-            
-            # CLEAR CACHE: Forces app to re-download fresh data immediately
-            load_data.clear()
-            
-            st.toast("☁️ Saved successfully", icon="✅")
-            time.sleep(1)
+            load_data.clear() # Instant refresh
+            st.toast("☁️ Saved!", icon="✅")
+            time.sleep(0.5)
     except Exception as e: st.error(f"Save Error: {e}")
 
 # --- USER LOADING ---
@@ -198,21 +192,23 @@ def authorizer_view(user):
     c3.metric("Your Actions", my_ready)
     c4.metric("Total DB", len(df))
     
-    tabs = st.tabs(["➕ Create", "⚡ Active", "✅ Review", "📂 Pendings", "📦 Doc Tracking", "📊 Master"])
+    tabs = st.tabs(["➕ Create", "⚡ Active", "✅ Review", "📂 Pendings", "🛠️ Master Manager", "📦 Doc Tracking"])
 
     # 1. CREATE TASK
     with tabs[0]:
         c_s, _ = st.columns([1,2])
         lg_search = c_s.text_input("Search History (LG #):")
         
-        d_br=d_cif=d_app=d_ben=d_curr=d_type=d_md=d_req=d_amt=""; prev_tot=0.0
+        # Init variables with BLANK default
+        d_br=d_cif=d_app=d_fav=d_ben=d_curr=d_type=d_md=d_req=d_amt=""; prev_tot=0.0
         
         if lg_search and not df.empty:
             hist = df[df['lg_number'] == lg_search]
             if not hist.empty:
                 last = hist.iloc[-1]
                 d_br=str(last['branch']); d_cif=str(last['cif']); d_app=str(last['applicant'])
-                d_ben=str(last['beneficiary']); d_curr=str(last['currency']); d_type=str(last['lg_type'])
+                d_ben=str(last['beneficiary']); d_fav=str(last.get('in_favor_of', ''))
+                d_curr=str(last['currency']); d_type=str(last['lg_type'])
                 d_md=str(last['md_ref']); d_req=str(last['req_type'])
                 
                 try: 
@@ -238,13 +234,24 @@ def authorizer_view(user):
             if cif=="New": cif=st.text_input("New CIF")
             
         with col2:
-            app_opts = get_unique(df, "applicant") + ["New"]; app = st.selectbox("Applicant", app_opts, index=get_index(app_opts, d_app))
+            # AUTO-FILL APPLICANT BASED ON CIF
+            auto_app = d_app
+            if cif != "New" and cif in df['cif'].values:
+                # Find most recent applicant for this CIF
+                cif_rows = df[df['cif'] == cif]
+                if not cif_rows.empty:
+                    auto_app = cif_rows.iloc[-1]['applicant']
+
+            app_opts = get_unique(df, "applicant") + ["New"]
+            app = st.selectbox("Applicant", app_opts, index=get_index(app_opts, auto_app))
             if app=="New": app=st.text_input("New Applicant")
             
             ben_opts = get_unique(df, "beneficiary") + ["New"]; ben = st.selectbox("Beneficiary", ben_opts, index=get_index(ben_opts, d_ben))
             if ben=="New": ben=st.text_input("New Beneficiary")
             
         with col3:
+            # ADDED "IN FAVOR OF"
+            fav = st.text_input("In Favor Of", value=d_fav)
             req_opts = get_unique(df, "req_type") + ["New"]; req = st.selectbox("Req Type", req_opts)
             if req=="New": req=st.text_input("New Req Type")
 
@@ -286,7 +293,7 @@ def authorizer_view(user):
                 new_row = pd.DataFrame([{
                     "task_id": new_id, "assigned_date": today_str,
                     "lg_number": new_lg, "lg_type": lgt, "branch": br, "cif": cif,
-                    "applicant": app, "beneficiary": ben, "inputter": inp, "authorizer": user,
+                    "applicant": app, "in_favor_of": fav, "beneficiary": ben, "inputter": inp, "authorizer": user,
                     "req_type": req, "amount": final_amt, "current_total": final_tot, "currency": curr,
                     "post_type": ptype, "md_ref": md, "comm_chg_ref": comm_chg, "status": "Active",
                     "file_sent": 0, "original_recvd": 0, "original_recv_date": "", "pending_reason": "", 
@@ -295,7 +302,7 @@ def authorizer_view(user):
                 save_data(pd.concat([df, new_row], ignore_index=True))
                 st.success(f"Assigned! Task ID: {new_id}"); time.sleep(1); st.rerun()
 
-    # 2. MANAGE ACTIVE (WITH DELETE BUTTON)
+    # 2. MANAGE ACTIVE
     with tabs[1]:
         act = df[df['status']=='Active']
         if act.empty: st.info("No active tasks")
@@ -318,17 +325,15 @@ def authorizer_view(user):
                         df.at[idx,'comm_status']=n_stat; df.at[idx,'postage_number']=n_pno
                         save_data(df); st.rerun()
 
-                # --- DELETE BUTTON (NEW) ---
                 st.markdown("---")
                 with st.expander("🗑️ Danger Zone"):
                     st.warning("This will permanently delete the task from the database.")
                     if st.button("Permanently Delete Task", type="primary"):
-                        # Remove row where task_id matches
                         new_df = df[df['task_id'] != sel_id]
                         save_data(new_df)
                         st.success("Task Deleted!"); time.sleep(1); st.rerun()
 
-    # 3. REVIEW
+    # 3. REVIEW (Fixed: Fields reset if blank)
     with tabs[2]:
         my_tasks = df[(df['authorizer']==user) & (df['status']=='Ready for Auth')]
         if my_tasks.empty: st.info("Nothing to approve")
@@ -368,11 +373,11 @@ def authorizer_view(user):
                             df.at[idx,'status']='Pending' if dec=="Pending" else 'Active'
                             df.at[idx,'pending_reason']=reas; save_data(df); st.rerun()
 
-    # 4. GLOBAL PENDINGS
+    # 4. GLOBAL PENDINGS (Show ALL Pending, show Assigned Auth Name)
     with tabs[3]:
         st.dataframe(pends[['lg_number','pending_reason','inputter','authorizer']], use_container_width=True)
         for i, row in pends.iterrows():
-            with st.expander(f"Manage {row['lg_number']} ({row['req_type']})"):
+            with st.expander(f"Manage {row['lg_number']} ({row['authorizer']})"):
                 c1, c2 = st.columns(2)
                 with c1: 
                     n_md = st.text_input("MD", row['md_ref'], key=f"p_md{i}")
@@ -392,8 +397,57 @@ def authorizer_view(user):
                     df.at[idx,'status']='Active' if dest=="Inputter" else 'Ready for Auth'
                     save_data(df); st.rerun()
 
-    # 5. DOC TRACKING
+    # 5. MASTER MANAGER (NEW: Search/Edit Everything)
     with tabs[4]:
+        st.subheader("🛠️ Master Task Manager")
+        search_q = st.text_input("Search (LG, Applicant, CIF, Status):", placeholder="Type to find any task...")
+        
+        if search_q:
+            # Filter logic
+            mask = df.apply(lambda x: x.astype(str).str.contains(search_q, case=False)).any(axis=1)
+            results = df[mask]
+            
+            if not results.empty:
+                st.dataframe(results[['lg_number', 'status', 'applicant', 'authorizer']], use_container_width=True)
+                sel_m_id = smart_select_task("Select Task to Manage", results, "master_sel")
+                
+                if sel_m_id:
+                    idx = df[df['task_id']==sel_m_id].index[0]; row = df.iloc[idx]
+                    st.write(f"Editing: **{row['lg_number']}** (Current Status: {row['status']})")
+                    
+                    with st.form("master_edit"):
+                        # Fields for everything
+                        mc1, mc2, mc3 = st.columns(3)
+                        with mc1:
+                            m_stat = st.selectbox("Status", ["Active", "Ready for Auth", "Pending", "Completed"], index=get_index(["Active", "Ready for Auth", "Pending", "Completed"], row['status']))
+                            m_auth = st.selectbox("Authorizer", get_users_by_role("Authorizer"), index=get_index(get_users_by_role("Authorizer"), row['authorizer']))
+                            m_post = st.text_area("Postage History/Notes", row['postage_number'])
+                        with mc2:
+                            m_inp = st.selectbox("Inputter", get_users_by_role("Inputter"), index=get_index(get_users_by_role("Inputter"), row['inputter']))
+                            m_cbe = st.text_input("CBE", row['cbe_serial'])
+                            m_md = st.text_input("MD", row['md_ref'])
+                        with mc3:
+                            m_comm = st.text_input("Comm Amt", row['comm_amount'])
+                            m_fs = st.checkbox("File Sent", value=(float(row['file_sent'])==1))
+                            m_or = st.checkbox("Orig Recvd", value=(float(row['original_recvd'])==1))
+
+                        c_del, c_save = st.columns([1, 2])
+                        with c_del:
+                            delete = st.checkbox("DELETE TASK PERMANENTLY")
+                        with c_save:
+                            if st.form_submit_button("Update Task"):
+                                if delete:
+                                    new_df = df[df['task_id'] != sel_m_id]
+                                    save_data(new_df); st.success("Deleted!"); time.sleep(1); st.rerun()
+                                else:
+                                    df.at[idx,'status']=m_stat; df.at[idx,'authorizer']=m_auth; df.at[idx,'postage_number']=m_post
+                                    df.at[idx,'inputter']=m_inp; df.at[idx,'cbe_serial']=m_cbe; df.at[idx,'md_ref']=m_md
+                                    df.at[idx,'comm_amount']=m_comm; df.at[idx,'file_sent']=1 if m_fs else 0; df.at[idx,'original_recvd']=1 if m_or else 0
+                                    save_data(df); st.success("Updated!"); time.sleep(1); st.rerun()
+            else: st.info("No tasks found.")
+
+    # 6. DOC TRACKING
+    with tabs[5]:
         st.subheader("📦 Document Tracking")
         pending_sent = df[(df['status']=='Completed') & (pd.to_numeric(df['file_sent'])==0)]
         with st.expander(f"📤 Pending File Sent ({len(pending_sent)})", expanded=True):
@@ -425,9 +479,6 @@ def authorizer_view(user):
                         df.at[idx,'original_recvd']=1; df.at[idx,'original_recv_date']=str(dt); df.at[idx,'post_type']='Original'
                         save_data(df); st.rerun()
             else: st.success("All originals received.")
-
-    with tabs[5]: 
-        st.dataframe(df, use_container_width=True)
 
 def inputter_view(user):
     st.title(f"⚡ Inputter: {user}")
