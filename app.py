@@ -208,11 +208,14 @@ def authorizer_view(user):
                 d_ben=str(last['beneficiary']); d_curr=str(last['currency']); d_type=str(last['lg_type'])
                 d_md=str(last['md_ref']); d_req=str(last['req_type'])
                 
+                # RETRIEVAL LOGIC: PRIORITIZE CURRENT TOTAL
                 try: 
+                    # First try to get the 'current_total' (Running Balance)
                     raw_curr = str(last['current_total']).replace(",","").strip()
                     prev_tot = float(raw_curr)
                 except: prev_tot = 0.0
                 
+                # Fallback: If current_total is 0 or empty, check 'amount'
                 if prev_tot == 0:
                     try: 
                         raw_amt = str(last['amount']).replace(",","").strip()
@@ -248,16 +251,14 @@ def authorizer_view(user):
                 st.info(f"Base Value (Previous): {prev_tot:,.2f}")
                 txn_amt = st.number_input("Delta Amount", min_value=0.0)
                 new_tot = prev_tot + txn_amt if "Increase" in req else prev_tot - txn_amt
-                
                 st.metric("New Total Result", f"{new_tot:,.2f}")
                 
-                # UPDATED LOGIC: 
-                # Amount = Base Amount (Before Change)
-                # Current Total = New Result (After Change)
+                # Logic: Amount = Base, Current Total = New Result
                 final_amt = prev_tot 
                 final_tot = new_tot
             else:
-                final_amt = st.number_input("Amount", value=float(d_amt) if d_amt else 0.0)
+                # FIX: For Extension/New, default value is prev_tot (The retrieved history total)
+                final_amt = st.number_input("Amount", value=prev_tot)
                 final_tot = final_amt
         with c_f2:
             curr_opts=["EGP","USD","EUR","GBP","SAR"]; curr=st.selectbox("Currency", curr_opts, index=get_index(curr_opts, d_curr))
@@ -266,7 +267,8 @@ def authorizer_view(user):
         c_d1, c_d2, c_d3 = st.columns(3)
         with c_d1:
             new_lg = st.text_input("LG Number", value=lg_search)
-            types=["Bid Bond","Performance(Final)","Advance Payment","Retention","Other"]
+            # UPDATED LG TYPES
+            types=["Bid Bond","Performance (Final)","Advance Payment","Others"]
             lgt=st.selectbox("LG Type", types, index=get_index(types, d_type))
         with c_d2:
             ptype=st.radio("Post Type", ["Original", "Copy"], horizontal=True)
@@ -298,13 +300,10 @@ def authorizer_view(user):
         act = df[df['status']=='Active']
         if act.empty: st.info("No active tasks")
         else:
-            # Show both Amount (Base) and Current Total in table
             st.dataframe(act[['lg_number','req_type', 'amount', 'current_total', 'inputter']], use_container_width=True)
             sel_id = smart_select_task("Select Task to Edit", act, "act_sel")
             if sel_id:
                 idx = df[df['task_id']==sel_id].index[0]; row = df.iloc[idx]
-                
-                # INFO BOX: Show Base vs New
                 st.info(f"ℹ️ Base Amount: {float(row['amount']):,.2f} | New Total: {float(row['current_total']):,.2f}")
                 
                 with st.form("edit_active"):
@@ -337,7 +336,6 @@ def authorizer_view(user):
                         e_comm=st.text_input("Comm", row['comm_amount'])
                         e_chg=st.text_input("Comm CHG", row['comm_chg_ref'])
                     with c2: 
-                        # ADDED CBE SERIAL HERE
                         e_cbe=st.text_input("CBE Serial", row['cbe_serial'])
                         e_st=st.selectbox("Comm Stat", COMM_OPTS, index=get_index(COMM_OPTS, row['comm_status']))
                     with c3: 
@@ -384,7 +382,7 @@ def authorizer_view(user):
                     df.at[idx,'status']='Active' if dest=="Inputter" else 'Ready for Auth'
                     save_data(df); st.rerun()
 
-    # 5. DOC TRACKING (Same as Inputter now)
+    # 5. DOC TRACKING
     with tabs[4]:
         st.subheader("📦 Document Tracking")
         pending_sent = df[(df['status']=='Completed') & (pd.to_numeric(df['file_sent'])==0)]
@@ -419,7 +417,6 @@ def authorizer_view(user):
             else: st.success("All originals received.")
 
     with tabs[5]: 
-        # Master Tab now shows Base Amount AND Current Total
         st.dataframe(df, use_container_width=True)
 
 def inputter_view(user):
@@ -437,8 +434,6 @@ def inputter_view(user):
             
             if sel_id:
                 idx = df[df['task_id']==sel_id].index[0]; row = df.iloc[idx]
-                
-                # Info Box
                 st.info(f"ℹ️ Base: {row['amount']} | New Total: {row['current_total']}")
                 
                 auths_list = get_users_by_role("Authorizer")
@@ -473,15 +468,11 @@ def inputter_view(user):
                         save_data(df); st.rerun()
         else: st.info("Empty")
 
-    # INPUTTER DOC TRACKING (IDENTICAL TO AUTHORIZER)
     with tabs[2]:
         st.subheader("📦 Document Tracking")
-        
-        # 1. PENDING FILE SENT (For Inputter to see/update too)
         pending_sent = df[(df['status']=='Completed') & (pd.to_numeric(df['file_sent'])==0)]
         with st.expander(f"📤 Pending File Sent ({len(pending_sent)})", expanded=True):
             if not pending_sent.empty:
-                # Added 'inputter' column to table
                 st.dataframe(pending_sent[['lg_number', 'applicant', 'inputter']], use_container_width=True)
                 sent_id = smart_select_task("Mark File Sent", pending_sent, "inp_fs_sel")
                 if sent_id:
@@ -493,11 +484,9 @@ def inputter_view(user):
             
         st.divider()
 
-        # 2. MISSING ORIGINALS
         miss = df[(df['post_type']=='Copy') & (pd.to_numeric(df['original_recvd'])==0)]
         with st.expander(f"📥 Missing Originals ({len(miss)})", expanded=True):
             if not miss.empty:
-                # Added 'inputter' column to table
                 st.dataframe(miss[['lg_number', 'branch', 'inputter']], use_container_width=True)
                 search = st.text_input("Search Missing:", key="inps")
                 opts = miss
