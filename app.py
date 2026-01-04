@@ -95,15 +95,16 @@ def load_data():
         for col in COLUMNS:
             if col not in df.columns: df[col] = ""
             
-        for col in ['amount', 'current_total', 'file_sent', 'original_recvd', 'comm_amount']:
+        numeric_cols = ['amount', 'current_total', 'comm_amount', 'file_sent', 'original_recvd']
+        for col in numeric_cols:
              if df[col].dtype == object:
-                 df[col] = df[col].astype(str).str.replace(",", "")
-             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                 df[col] = df[col].astype(str).str.replace(",", "").str.strip()
+             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         
         df = df.astype(str)
         for col in numeric_cols: df[col] = pd.to_numeric(df[col])
 
-        for col in ['status', 'lg_number', 'req_type', 'cif', 'applicant']:
+        for col in ['status', 'lg_number', 'req_type', 'cif', 'applicant', 'notes']:
             df[col] = df[col].str.strip()
             
         return df
@@ -145,7 +146,7 @@ def update_users_sheet(df):
             wks.clear()
             wks.append_row(df.columns.tolist())
             wks.append_rows(df.values.tolist())
-            get_cached_users.clear() # Clear cache to refresh
+            get_cached_users.clear()
             st.success("User Database Updated!")
             time.sleep(1)
             st.rerun()
@@ -185,7 +186,6 @@ def smart_select_task(label, df_subset, key_suffix):
     for i, row in df_subset.iterrows():
         display_label = f"{row['lg_number']} | {row['assigned_date']} | {row['branch']} | {row['cif']} | {row['applicant']} | {row['beneficiary']} | {row['req_type']}"
         task_map[display_label] = row['task_id']
-    
     if not task_map: return None
     sel_label = st.selectbox(label, list(task_map.keys()), key=key_suffix)
     return task_map.get(sel_label)
@@ -210,18 +210,25 @@ def generate_daily_stats(df):
 # ==========================================
 
 def authorizer_view(user):
-    st.title(f"🛡️ Authorizer: {user}")
-    df = load_data()
+    # ADMIN OVERRIDE TITLE
+    if user == "Admin": st.title("🛡️ Authorizer Mode (GOD MODE)")
+    else: st.title(f"🛡️ Authorizer: {user}")
     
+    df = load_data()
     today_str = get_current_date()
     daily = len(df[df['assigned_date'] == today_str])
     pends = df[df['status'] == 'Pending']
-    my_ready = len(df[(df['authorizer']==user) & (df['status']=='Ready for Auth')])
+    
+    # GOD MODE LOGIC: Admin sees ALL ready tasks, Normal users see only theirs
+    if user == "Admin":
+        my_ready = len(df[df['status'] == 'Ready for Auth'])
+    else:
+        my_ready = len(df[(df['authorizer'] == user) & (df['status'] == 'Ready for Auth')])
     
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Today's LGs", daily)
     c2.metric("Global Pending", len(pends))
-    c3.metric("Your Actions", my_ready)
+    c3.metric("Action Required", my_ready)
     c4.metric("Total DB", len(df))
     
     tabs = st.tabs(["➕ Create", "⚡ Active", "✅ Review", "📂 Pendings", "📈 Daily Reports", "🛠️ Master Manager", "📦 Doc Tracking", "📊 Database"])
@@ -252,16 +259,12 @@ def authorizer_view(user):
         col1, col2, col3 = st.columns(3)
         with col1:
             br_opts = get_unique(df, "branch") + ["New"]; br = st.selectbox("Branch", br_opts, index=get_index(br_opts, d_br))
-            if br=="New": 
-                br=st.text_input("New Branch")
-                if br and br in df['branch'].values: st.warning("⚠️ Exists in DB!")
+            if br=="New": br=st.text_input("New Branch")
             
             sel_app_idx = get_index(get_unique(df, "applicant") + ["New"], d_app)
             app_opts = get_unique(df, "applicant") + ["New"]
             app = st.selectbox("Applicant", app_opts, index=sel_app_idx)
-            if app=="New": 
-                app=st.text_input("New Applicant")
-                if app and app in df['applicant'].values: st.warning("⚠️ Exists in DB!")
+            if app=="New": app=st.text_input("New Applicant")
             
             derived_cif = d_cif
             if app != "New" and app in df['applicant'].values:
@@ -270,16 +273,11 @@ def authorizer_view(user):
             
             cif_opts = get_unique(df, "cif") + ["New"]
             cif = st.selectbox("CIF", cif_opts, index=get_index(cif_opts, derived_cif))
-            if cif=="New": 
-                cif=st.text_input("New CIF")
-                if cif and cif in df['cif'].values: st.warning("⚠️ Exists in DB!")
+            if cif=="New": cif=st.text_input("New CIF")
             
         with col2:
             ben_opts = get_unique(df, "beneficiary") + ["New"]; ben = st.selectbox("Beneficiary", ben_opts, index=get_index(ben_opts, d_ben))
-            if ben=="New": 
-                ben=st.text_input("New Beneficiary")
-                if ben and ben in df['beneficiary'].values: st.warning("⚠️ Exists in DB!")
-            
+            if ben=="New": ben=st.text_input("New Beneficiary")
             fav_opts = get_unique(df, "in_favor_of") + ["New"]
             fav = st.selectbox("In Favor Of", fav_opts, index=get_index(fav_opts, d_fav))
             if fav=="New": fav=st.text_input("New In Favor Of")
@@ -359,7 +357,12 @@ def authorizer_view(user):
                     save_data(new_df); st.success("Deleted!"); time.sleep(1); st.rerun()
 
     with tabs[2]: # REVIEW
-        my_tasks = df[(df['authorizer']==user) & (df['status']=='Ready for Auth')]
+        # GOD MODE LOGIC: Admin sees all ready tasks
+        if user == "Admin":
+            my_tasks = df[df['status']=='Ready for Auth']
+        else:
+            my_tasks = df[(df['authorizer']==user) & (df['status']=='Ready for Auth')]
+            
         if my_tasks.empty: st.info("Nothing to approve")
         else:
             sel_id = smart_select_task("Select to Action", my_tasks, "rev_sel")
@@ -395,7 +398,7 @@ def authorizer_view(user):
                             df.at[idx,'status']='Pending' if dec=="Pending" else 'Active'
                             df.at[idx,'pending_reason']=reas; save_data(df); st.rerun()
 
-    with tabs[3]: # PENDINGS
+    with tabs[3]: # PENDINGS (God Mode logic is implicit because global pendings shows all)
         st.dataframe(pends[['lg_number','pending_reason','inputter','authorizer']], use_container_width=True)
         for i, row in pends.iterrows():
             with st.expander(f"Manage {row['lg_number']} ({row['authorizer']})"):
@@ -510,13 +513,24 @@ def authorizer_view(user):
     with tabs[7]: st.dataframe(df, use_container_width=True)
 
 def inputter_view(user):
-    st.title(f"⚡ Inputter: {user}")
+    # ADMIN OVERRIDE TITLE
+    if user == "Admin": st.title("⚡ Inputter Mode (GOD MODE)")
+    else: st.title(f"⚡ Inputter: {user}")
+    
     df = load_data()
-    st.metric("Tasks", len(df[(df['inputter']==user) & (df['status']=='Active')]))
+    
+    # GOD MODE LOGIC: Admin sees everything active/pending for all users
+    if user == "Admin":
+        act = df[df['status']=='Active']
+        mine = df[df['status']=='Pending']
+    else:
+        act = df[(df['inputter']==user) & (df['status']=='Active')]
+        mine = df[(df['inputter']==user) & (df['status']=='Pending')]
+        
+    st.metric("Active Tasks", len(act))
     tabs = st.tabs(["Tasks", "Watchlist", "Doc Tracking"])
 
     with tabs[0]:
-        act = df[(df['inputter']==user) & (df['status']=='Active')]
         if not act.empty:
             st.dataframe(act[['lg_number','req_type', 'beneficiary', 'amount']], use_container_width=True)
             sel_id = smart_select_task("Process Task", act, "inp_act_sel")
@@ -538,7 +552,6 @@ def inputter_view(user):
         else: st.info("Done!")
 
     with tabs[1]:
-        mine = df[(df['inputter']==user) & (df['status']=='Pending')]
         if not mine.empty:
             sel_id = smart_select_task("Fix Task", mine, "inp_watch_sel")
             if sel_id:
@@ -607,7 +620,6 @@ def admin_view():
                     users_df = users_df[users_df['username'] != d_sel]
                     update_users_sheet(users_df)
         else: st.warning("No users found.")
-        
         st.divider()
         with st.form("add_user"):
             st.write("#### ➕ Add New User")
@@ -622,7 +634,7 @@ def admin_view():
 
     with tabs[1]: # SUPER MODE
         st.subheader("🦹 Super User Mode")
-        st.info("You are currently viewing the app as another role. Use with caution.")
+        st.info("Viewing as GLOBAL ADMIN (Access to all tasks)")
         mode = st.radio("Switch View:", ["Authorizer Mode", "Inputter Mode"], horizontal=True)
         if mode == "Authorizer Mode": authorizer_view("Admin")
         else: inputter_view("Admin")
