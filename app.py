@@ -33,15 +33,16 @@ st.markdown("""
     .stButton>button:hover {
         background-color: #b45309; color: white;
     }
-    /* Info Box Style */
-    .stAlert {
-        background-color: #1e293b; color: #fbbf24; border: 1px solid #fbbf24;
+    /* Danger Button Style */
+    div[data-testid="stExpander"] details summary p {
+        color: #ef4444; /* Red Text for Danger Zone */
+        font-weight: bold;
     }
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. STABLE GOOGLE SHEETS ENGINE
+# 2. STABLE & CACHED GOOGLE SHEETS ENGINE
 # ==========================================
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
@@ -73,7 +74,7 @@ def get_users_sheet():
             return None
     return None
 
-# --- DATA LOADERS ---
+# --- DATA LOADERS (NOW CACHED FOR SPEED) ---
 COLUMNS = [
     "task_id", "assigned_date", "branch", "post_type", "inputter", 
     "req_type", "cif", "applicant", "beneficiary", "amount", "current_total", "currency", 
@@ -83,6 +84,8 @@ COLUMNS = [
 ]
 COMM_OPTS = ["", "Collected", "Pending", "Due Comm."]
 
+# CACHE ADDED HERE: Speeds up the app by not downloading data on every click
+@st.cache_data(ttl=60) 
 def load_data():
     try:
         wks = get_main_sheet()
@@ -117,6 +120,10 @@ def save_data(df):
             df_clean = df.fillna("")
             wks.append_row(df_clean.columns.tolist())
             wks.append_rows(df_clean.values.tolist())
+            
+            # CLEAR CACHE: Forces app to re-download fresh data immediately
+            load_data.clear()
+            
             st.toast("☁️ Saved successfully", icon="✅")
             time.sleep(1)
     except Exception as e: st.error(f"Save Error: {e}")
@@ -208,14 +215,11 @@ def authorizer_view(user):
                 d_ben=str(last['beneficiary']); d_curr=str(last['currency']); d_type=str(last['lg_type'])
                 d_md=str(last['md_ref']); d_req=str(last['req_type'])
                 
-                # RETRIEVAL LOGIC: PRIORITIZE CURRENT TOTAL
                 try: 
-                    # First try to get the 'current_total' (Running Balance)
                     raw_curr = str(last['current_total']).replace(",","").strip()
                     prev_tot = float(raw_curr)
                 except: prev_tot = 0.0
                 
-                # Fallback: If current_total is 0 or empty, check 'amount'
                 if prev_tot == 0:
                     try: 
                         raw_amt = str(last['amount']).replace(",","").strip()
@@ -252,12 +256,9 @@ def authorizer_view(user):
                 txn_amt = st.number_input("Delta Amount", min_value=0.0)
                 new_tot = prev_tot + txn_amt if "Increase" in req else prev_tot - txn_amt
                 st.metric("New Total Result", f"{new_tot:,.2f}")
-                
-                # Logic: Amount = Base, Current Total = New Result
                 final_amt = prev_tot 
                 final_tot = new_tot
             else:
-                # FIX: For Extension/New, default value is prev_tot (The retrieved history total)
                 final_amt = st.number_input("Amount", value=prev_tot)
                 final_tot = final_amt
         with c_f2:
@@ -267,7 +268,6 @@ def authorizer_view(user):
         c_d1, c_d2, c_d3 = st.columns(3)
         with c_d1:
             new_lg = st.text_input("LG Number", value=lg_search)
-            # UPDATED LG TYPES
             types=["Bid Bond","Performance (Final)","Advance Payment","Others"]
             lgt=st.selectbox("LG Type", types, index=get_index(types, d_type))
         with c_d2:
@@ -295,7 +295,7 @@ def authorizer_view(user):
                 save_data(pd.concat([df, new_row], ignore_index=True))
                 st.success(f"Assigned! Task ID: {new_id}"); time.sleep(1); st.rerun()
 
-    # 2. MANAGE ACTIVE
+    # 2. MANAGE ACTIVE (WITH DELETE BUTTON)
     with tabs[1]:
         act = df[df['status']=='Active']
         if act.empty: st.info("No active tasks")
@@ -312,11 +312,21 @@ def authorizer_view(user):
                     with c1: n_inp=st.selectbox("Inputter", all_inps, index=get_index(all_inps, row['inputter'])); n_md=st.text_input("MD", row['md_ref']); n_chg=st.text_input("Comm CHG", row['comm_chg_ref'])
                     with c2: n_cbe=st.text_input("CBE", row['cbe_serial']); n_comm=st.text_input("Comm Amt", row['comm_amount']); n_fs=st.checkbox("File Sent", value=(float(row['file_sent'])==1))
                     with c3: n_stat=st.selectbox("Status", COMM_OPTS, index=get_index(COMM_OPTS, row['comm_status'])); n_pno=st.text_input("Postage", row['postage_number'])
-                    if st.form_submit_button("Save"):
+                    if st.form_submit_button("Save Changes"):
                         df.at[idx,'inputter']=n_inp; df.at[idx,'md_ref']=n_md; df.at[idx,'comm_chg_ref']=n_chg
                         df.at[idx,'cbe_serial']=n_cbe; df.at[idx,'comm_amount']=n_comm; df.at[idx,'file_sent']=1 if n_fs else 0
                         df.at[idx,'comm_status']=n_stat; df.at[idx,'postage_number']=n_pno
                         save_data(df); st.rerun()
+
+                # --- DELETE BUTTON (NEW) ---
+                st.markdown("---")
+                with st.expander("🗑️ Danger Zone"):
+                    st.warning("This will permanently delete the task from the database.")
+                    if st.button("Permanently Delete Task", type="primary"):
+                        # Remove row where task_id matches
+                        new_df = df[df['task_id'] != sel_id]
+                        save_data(new_df)
+                        st.success("Task Deleted!"); time.sleep(1); st.rerun()
 
     # 3. REVIEW
     with tabs[2]:
