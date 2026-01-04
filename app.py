@@ -8,7 +8,7 @@ import time
 import pytz
 
 # ==========================================
-# 1. VISUAL SETUP & CONFIGURATION
+# 1. VISUAL SETUP
 # ==========================================
 st.set_page_config(page_title="Alex LG Workflow", layout="wide", page_icon="🏦")
 
@@ -33,16 +33,19 @@ st.markdown("""
     .stButton>button:hover {
         background-color: #b45309; color: white;
     }
+    /* Info Box Style */
+    .stAlert {
+        background-color: #1e293b; color: #fbbf24; border: 1px solid #fbbf24;
+    }
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. STABLE GOOGLE SHEETS ENGINE (CACHED)
+# 2. STABLE GOOGLE SHEETS ENGINE
 # ==========================================
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
-# CACHE THE CONNECTION: Connects once, stays connected.
-@st.cache_resource(ttl=600) # Reconnects every 10 mins automatically
+@st.cache_resource(ttl=600)
 def get_client():
     try:
         creds_dict = dict(st.secrets["connections"]["gsheets"])
@@ -67,7 +70,6 @@ def get_users_sheet():
         try:
             return client.open_by_url(sheet_url).worksheet("Users")
         except:
-            # Silent fail: Don't crash the app, just return None
             return None
     return None
 
@@ -90,7 +92,6 @@ def load_data():
         df = pd.DataFrame(data)
         if df.empty: return pd.DataFrame(columns=COLUMNS)
         
-        # Ensure all columns exist
         for col in COLUMNS:
             if col not in df.columns: df[col] = ""
             
@@ -120,14 +121,12 @@ def save_data(df):
             time.sleep(1)
     except Exception as e: st.error(f"Save Error: {e}")
 
-# --- ROBUST USER LOADING ---
-# Cache users to prevent "Tab Not Found" errors during typing
+# --- USER LOADING ---
 @st.cache_data(ttl=300) 
 def get_cached_users():
     try:
         wks = get_users_sheet()
         if not wks: return pd.DataFrame(columns=["username", "password", "role", "name"])
-        
         data = wks.get_all_records()
         df = pd.DataFrame(data).astype(str)
         if 'username' in df.columns: df['username'] = df['username'].str.strip()
@@ -148,9 +147,7 @@ def get_current_date(): return get_cairo_time().strftime("%d-%b-%Y")
 
 def generate_task_id(df):
     today_str = get_current_date()
-    # Safe counting of today's tasks
     if 'task_id' not in df.columns: return f"{today_str}-001"
-    
     count_today = df['task_id'].astype(str).str.startswith(today_str).sum()
     new_seq = count_today + 1
     return f"{today_str}-{new_seq:03d}"
@@ -196,12 +193,11 @@ def authorizer_view(user):
     
     tabs = st.tabs(["➕ Create", "⚡ Active", "✅ Review", "📂 Pendings", "📦 Doc Tracking", "📊 Master"])
 
-    # 1. CREATE TASK (STABILIZED)
+    # 1. CREATE TASK
     with tabs[0]:
         c_s, _ = st.columns([1,2])
         lg_search = c_s.text_input("Search History (LG #):")
         
-        # Initialize Variables
         d_br=d_cif=d_app=d_ben=d_curr=d_type=d_md=d_req=d_amt=""; prev_tot=0.0
         
         if lg_search and not df.empty:
@@ -223,9 +219,8 @@ def authorizer_view(user):
                         prev_tot = float(raw_amt) 
                     except: prev_tot = 0.0
                 
-                st.toast(f"History Found. Previous Total Value: {prev_tot:,.2f}")
+                st.toast(f"History Found. Previous Total: {prev_tot:,.2f}")
 
-        # --- FORM INPUTS (Isolated logic to prevent resets) ---
         st.subheader("Client Info")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -233,7 +228,7 @@ def authorizer_view(user):
             if br=="New": br=st.text_input("New Branch")
             
             cif_opts = get_unique(df, "cif") + ["New"]; cif = st.selectbox("CIF", cif_opts, index=get_index(cif_opts, d_cif))
-            if cif=="New": cif=st.text_input("New CIF") # Separate widget, won't affect others
+            if cif=="New": cif=st.text_input("New CIF")
             
         with col2:
             app_opts = get_unique(df, "applicant") + ["New"]; app = st.selectbox("Applicant", app_opts, index=get_index(app_opts, d_app))
@@ -253,8 +248,14 @@ def authorizer_view(user):
                 st.info(f"Base Value (Previous): {prev_tot:,.2f}")
                 txn_amt = st.number_input("Delta Amount", min_value=0.0)
                 new_tot = prev_tot + txn_amt if "Increase" in req else prev_tot - txn_amt
+                
                 st.metric("New Total Result", f"{new_tot:,.2f}")
-                final_amt=txn_amt; final_tot=new_tot
+                
+                # UPDATED LOGIC: 
+                # Amount = Base Amount (Before Change)
+                # Current Total = New Result (After Change)
+                final_amt = prev_tot 
+                final_tot = new_tot
             else:
                 final_amt = st.number_input("Amount", value=float(d_amt) if d_amt else 0.0)
                 final_tot = final_amt
@@ -265,7 +266,7 @@ def authorizer_view(user):
         c_d1, c_d2, c_d3 = st.columns(3)
         with c_d1:
             new_lg = st.text_input("LG Number", value=lg_search)
-            types=["Bid Bond","Performance","Advance Payment","Retention","Final","Other"]
+            types=["Bid Bond","Performance(Final)","Advance Payment","Retention","Other"]
             lgt=st.selectbox("LG Type", types, index=get_index(types, d_type))
         with c_d2:
             ptype=st.radio("Post Type", ["Original", "Copy"], horizontal=True)
@@ -297,10 +298,15 @@ def authorizer_view(user):
         act = df[df['status']=='Active']
         if act.empty: st.info("No active tasks")
         else:
-            st.dataframe(act[['lg_number','req_type', 'beneficiary', 'amount', 'inputter']], use_container_width=True)
+            # Show both Amount (Base) and Current Total in table
+            st.dataframe(act[['lg_number','req_type', 'amount', 'current_total', 'inputter']], use_container_width=True)
             sel_id = smart_select_task("Select Task to Edit", act, "act_sel")
             if sel_id:
                 idx = df[df['task_id']==sel_id].index[0]; row = df.iloc[idx]
+                
+                # INFO BOX: Show Base vs New
+                st.info(f"ℹ️ Base Amount: {float(row['amount']):,.2f} | New Total: {float(row['current_total']):,.2f}")
+                
                 with st.form("edit_active"):
                     c1, c2, c3 = st.columns(3)
                     all_inps = get_users_by_role("Inputter")
@@ -323,21 +329,33 @@ def authorizer_view(user):
                 idx = df[df['task_id']==sel_id].index[0]; row = df.iloc[idx]
                 with st.form("review_form"):
                     st.write(f"Actioning: **{row['lg_number']}** | {row['req_type']}")
+                    st.caption(f"Base: {row['amount']} | New Total: {row['current_total']}")
+                    
                     c1, c2, c3 = st.columns(3)
-                    with c1: e_md=st.text_input("MD", row['md_ref']); e_comm=st.text_input("Comm", row['comm_amount']); e_chg=st.text_input("Comm CHG", row['comm_chg_ref'])
-                    with c2: e_st=st.selectbox("Comm Stat", COMM_OPTS, index=get_index(COMM_OPTS, row['comm_status'])); 
-                    with c3: e_post=st.text_input("Postage Number", row['postage_number']); e_start=st.text_input("To be done on", row['to_be_started_on'])
+                    with c1: 
+                        e_md=st.text_input("MD", row['md_ref'])
+                        e_comm=st.text_input("Comm", row['comm_amount'])
+                        e_chg=st.text_input("Comm CHG", row['comm_chg_ref'])
+                    with c2: 
+                        # ADDED CBE SERIAL HERE
+                        e_cbe=st.text_input("CBE Serial", row['cbe_serial'])
+                        e_st=st.selectbox("Comm Stat", COMM_OPTS, index=get_index(COMM_OPTS, row['comm_status']))
+                    with c3: 
+                        e_post=st.text_input("Postage Number", row['postage_number'])
+                        e_start=st.text_input("To be done on", row['to_be_started_on'])
                     
                     st.divider()
                     dec = st.radio("Decision", ["Approve", "Pending", "Return"], horizontal=True)
                     reas = st.text_input("Reason")
                     
                     if st.form_submit_button("Execute"):
-                        df.at[idx,'md_ref']=e_md; df.at[idx,'comm_amount']=e_comm; df.at[idx,'comm_status']=e_st; df.at[idx,'comm_chg_ref']=e_chg
+                        df.at[idx,'md_ref']=e_md; df.at[idx,'comm_amount']=e_comm; df.at[idx,'comm_status']=e_st
+                        df.at[idx,'comm_chg_ref']=e_chg; df.at[idx,'cbe_serial']=e_cbe
                         df.at[idx,'postage_number']=e_post; df.at[idx,'to_be_started_on']=e_start
+                        
                         if dec=="Approve":
                             df.at[idx,'status']='Completed'
-                            save_data(df); st.success("Approved! (File Sent Pending)"); time.sleep(1); st.rerun()
+                            save_data(df); st.success("Approved!"); time.sleep(1); st.rerun()
                         else:
                             df.at[idx,'status']='Pending' if dec=="Pending" else 'Active'
                             df.at[idx,'pending_reason']=reas; save_data(df); st.rerun()
@@ -366,13 +384,13 @@ def authorizer_view(user):
                     df.at[idx,'status']='Active' if dest=="Inputter" else 'Ready for Auth'
                     save_data(df); st.rerun()
 
-    # 5. DOC TRACKING
+    # 5. DOC TRACKING (Same as Inputter now)
     with tabs[4]:
         st.subheader("📦 Document Tracking")
         pending_sent = df[(df['status']=='Completed') & (pd.to_numeric(df['file_sent'])==0)]
         with st.expander(f"📤 Pending File Sent ({len(pending_sent)})", expanded=True):
             if not pending_sent.empty:
-                st.dataframe(pending_sent[['lg_number', 'applicant', 'beneficiary']], use_container_width=True)
+                st.dataframe(pending_sent[['lg_number', 'applicant', 'inputter']], use_container_width=True)
                 sent_id = smart_select_task("Mark File Sent", pending_sent, "fs_sel")
                 if sent_id:
                     if st.button("Confirm File Sent"):
@@ -400,7 +418,9 @@ def authorizer_view(user):
                         save_data(df); st.rerun()
             else: st.success("All originals received.")
 
-    with tabs[5]: st.dataframe(df)
+    with tabs[5]: 
+        # Master Tab now shows Base Amount AND Current Total
+        st.dataframe(df, use_container_width=True)
 
 def inputter_view(user):
     st.title(f"⚡ Inputter: {user}")
@@ -417,6 +437,10 @@ def inputter_view(user):
             
             if sel_id:
                 idx = df[df['task_id']==sel_id].index[0]; row = df.iloc[idx]
+                
+                # Info Box
+                st.info(f"ℹ️ Base: {row['amount']} | New Total: {row['current_total']}")
+                
                 auths_list = get_users_by_role("Authorizer")
                 cur_auth = row['authorizer']
                 
@@ -449,22 +473,44 @@ def inputter_view(user):
                         save_data(df); st.rerun()
         else: st.info("Empty")
 
+    # INPUTTER DOC TRACKING (IDENTICAL TO AUTHORIZER)
     with tabs[2]:
         st.subheader("📦 Document Tracking")
+        
+        # 1. PENDING FILE SENT (For Inputter to see/update too)
+        pending_sent = df[(df['status']=='Completed') & (pd.to_numeric(df['file_sent'])==0)]
+        with st.expander(f"📤 Pending File Sent ({len(pending_sent)})", expanded=True):
+            if not pending_sent.empty:
+                # Added 'inputter' column to table
+                st.dataframe(pending_sent[['lg_number', 'applicant', 'inputter']], use_container_width=True)
+                sent_id = smart_select_task("Mark File Sent", pending_sent, "inp_fs_sel")
+                if sent_id:
+                    if st.button("Confirm File Sent"):
+                        idx = df[df['task_id']==sent_id].index[0]
+                        df.at[idx, 'file_sent'] = 1
+                        save_data(df); st.success("Updated!"); st.rerun()
+            else: st.success("All approved files sent.")
+            
+        st.divider()
+
+        # 2. MISSING ORIGINALS
         miss = df[(df['post_type']=='Copy') & (pd.to_numeric(df['original_recvd'])==0)]
-        st.metric("Total Missing Originals", len(miss))
-        
-        search = st.text_input("Search Missing:", key="inps")
-        opts = miss
-        if search: opts = miss[miss['lg_number'].str.contains(search, case=False)]
-        
-        miss_id = smart_select_task("Found Original", opts, "inp_miss_sel")
-        if miss_id:
-            dt = st.date_input("Date", key="inpd")
-            if st.button("Receive", key="inpb"):
-                 idx=df[df['task_id']==miss_id].index[0]
-                 df.at[idx,'original_recvd']=1; df.at[idx,'original_recv_date']=str(dt); df.at[idx,'post_type']='Original'
-                 save_data(df); st.rerun()
+        with st.expander(f"📥 Missing Originals ({len(miss)})", expanded=True):
+            if not miss.empty:
+                # Added 'inputter' column to table
+                st.dataframe(miss[['lg_number', 'branch', 'inputter']], use_container_width=True)
+                search = st.text_input("Search Missing:", key="inps")
+                opts = miss
+                if search: opts = miss[miss['lg_number'].str.contains(search, case=False)]
+                
+                miss_id = smart_select_task("Found Original", opts, "inp_miss_sel")
+                if miss_id:
+                    dt = st.date_input("Date", key="inpd")
+                    if st.button("Receive", key="inpb"):
+                         idx=df[df['task_id']==miss_id].index[0]
+                         df.at[idx,'original_recvd']=1; df.at[idx,'original_recv_date']=str(dt); df.at[idx,'post_type']='Original'
+                         save_data(df); st.rerun()
+            else: st.success("All originals received.")
 
 def admin_view():
     st.title("⚙️ Admin Panel")
