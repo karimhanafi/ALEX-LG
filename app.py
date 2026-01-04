@@ -19,7 +19,7 @@ st.markdown("""
         background: linear-gradient(to bottom right, #0f172a, #1e293b);
         color: #e2e8f0;
     }
-    .stTextInput>div>div>input, .stSelectbox>div>div>div, .stNumberInput>div>div>input, .stDateInput>div>div>input {
+    .stTextInput>div>div>input, .stSelectbox>div>div>div, .stNumberInput>div>div>input {
         background-color: #334155 !important; color: white !important; border: 1px solid #475569;
     }
     h1, h2, h3 {color: #fbbf24 !important;}
@@ -33,10 +33,8 @@ st.markdown("""
     .stButton>button:hover {
         background-color: #b45309; color: white;
     }
-    /* Danger Button Style */
-    div[data-testid="stExpander"] details summary p {
-        color: #ef4444; 
-        font-weight: bold;
+    .stAlert {
+        background-color: #1e293b; color: #fbbf24; border: 1px solid #fbbf24;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -75,7 +73,6 @@ def get_users_sheet():
     return None
 
 # --- DATA LOADERS ---
-# UPDATED ORDER: LG_NUMBER IS NOW 3RD (Index 2)
 COLUMNS = [
     "task_id", "assigned_date", "lg_number", "branch", "post_type", "inputter", 
     "req_type", "cif", "applicant", "in_favor_of", "beneficiary", "amount", "current_total", "currency", 
@@ -95,15 +92,25 @@ def load_data():
         df = pd.DataFrame(data)
         if df.empty: return pd.DataFrame(columns=COLUMNS)
         
+        # Ensure all columns exist
         for col in COLUMNS:
             if col not in df.columns: df[col] = ""
             
-        for col in ['amount', 'current_total', 'file_sent', 'original_recvd', 'comm_amount']:
+        # STRICT NUMERIC CLEANING (Fixes the ValueError)
+        numeric_cols = ['amount', 'current_total', 'comm_amount', 'file_sent', 'original_recvd']
+        for col in numeric_cols:
+             # Remove commas if present
              if df[col].dtype == object:
-                 df[col] = df[col].astype(str).str.replace(",", "")
-             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                 df[col] = df[col].astype(str).str.replace(",", "").str.strip()
+             # Force to number, invalid becomes 0.0
+             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         
-        df = df.astype(str)
+        # String Cleaning
+        df = df.astype(str) # Convert everything else to string for safe display
+        # Re-apply numeric types for calculation columns after string conversion
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col])
+
         for col in ['status', 'lg_number', 'req_type', 'cif', 'applicant']:
             df[col] = df[col].str.strip()
             
@@ -115,10 +122,14 @@ def save_data(df):
         wks = get_main_sheet()
         if wks:
             wks.clear()
+            # Convert bool/int flags to simple 1/0 for sheet
+            df['file_sent'] = df['file_sent'].apply(lambda x: 1 if float(x)>0 else 0)
+            df['original_recvd'] = df['original_recvd'].apply(lambda x: 1 if float(x)>0 else 0)
+            
             df_clean = df.fillna("")
             wks.append_row(df_clean.columns.tolist())
             wks.append_rows(df_clean.values.tolist())
-            load_data.clear()
+            load_data.clear() # Clear cache to show updates instantly
             st.toast("☁️ Saved!", icon="✅")
             time.sleep(0.5)
     except Exception as e: st.error(f"Save Error: {e}")
@@ -166,11 +177,10 @@ def get_index(options, value):
     try: return options.index(str(value))
     except: return 0
 
-# SMART SEARCH: Displays detailed info in dropdown
 def smart_select_task(label, df_subset, key_suffix):
     task_map = {}
     for i, row in df_subset.iterrows():
-        # MORE DETAILS ADDED TO LABEL
+        # DETAILED LABEL: LG | Date | Branch | Ben | CIF
         display_label = f"{row['lg_number']} | {row['assigned_date']} | {row['branch']} | {row['beneficiary']} | {row['cif']}"
         task_map[display_label] = row['task_id']
     
@@ -197,7 +207,6 @@ def authorizer_view(user):
     c3.metric("Your Actions", my_ready)
     c4.metric("Total DB", len(df))
     
-    # ADDED "DAILY REPORT" TAB
     tabs = st.tabs(["➕ Create", "⚡ Active", "✅ Review", "📂 Pendings", "📈 Daily Reports", "🛠️ Master Manager", "📦 Doc Tracking", "📊 Database"])
 
     # 1. CREATE TASK
@@ -216,15 +225,13 @@ def authorizer_view(user):
                 d_curr=str(last['currency']); d_type=str(last['lg_type'])
                 d_md=str(last['md_ref']); d_req=str(last['req_type'])
                 
-                try: 
-                    raw_curr = str(last['current_total']).replace(",","").strip()
-                    prev_tot = float(raw_curr)
+                try: prev_tot = float(last['current_total'])
                 except: prev_tot = 0.0
                 if prev_tot == 0:
-                    try: prev_tot = float(str(last['amount']).replace(",","").strip()) 
+                    try: prev_tot = float(last['amount'])
                     except: prev_tot = 0.0
                 
-                st.toast(f"History Found. Previous Total: {prev_tot:,.2f}")
+                st.toast(f"Found History. Previous Total: {prev_tot:,.2f}")
 
         st.subheader("Client Info")
         col1, col2, col3 = st.columns(3)
@@ -236,7 +243,7 @@ def authorizer_view(user):
             if cif=="New": cif=st.text_input("New CIF")
             
         with col2:
-            # BIDIRECTIONAL LOGIC
+            # AUTO-FILL APPLICANT <-> CIF
             auto_app = d_app
             if cif != "New" and cif in df['cif'].values:
                 match = df[df['cif']==cif]
@@ -246,12 +253,11 @@ def authorizer_view(user):
             app = st.selectbox("Applicant", app_opts, index=get_index(app_opts, auto_app))
             if app=="New": app=st.text_input("New Applicant")
             
-            # Reverse: If Applicant selected, find CIF
             if app != "New" and app in df['applicant'].values:
                 match_c = df[df['applicant']==app]
                 if not match_c.empty: 
                     found_cif = match_c.iloc[-1]['cif']
-                    if cif != found_cif: st.info(f"💡 Suggested CIF for {app}: {found_cif}")
+                    if cif != found_cif: st.info(f"💡 Suggest CIF: {found_cif}")
 
             ben_opts = get_unique(df, "beneficiary") + ["New"]; ben = st.selectbox("Beneficiary", ben_opts, index=get_index(ben_opts, d_ben))
             if ben=="New": ben=st.text_input("New Beneficiary")
@@ -337,9 +343,9 @@ def authorizer_view(user):
                 with st.expander("🗑️ Danger Zone"):
                     if st.button("Permanently Delete Task", type="primary"):
                         new_df = df[df['task_id'] != sel_id]
-                        save_data(new_df); st.success("Task Deleted!"); time.sleep(1); st.rerun()
+                        save_data(new_df); st.success("Deleted!"); time.sleep(1); st.rerun()
 
-    # 3. REVIEW (Commission Math Added)
+    # 3. REVIEW (Commission Math + Pending Comm)
     with tabs[2]:
         my_tasks = df[(df['authorizer']==user) & (df['status']=='Ready for Auth')]
         if my_tasks.empty: st.info("Nothing to approve")
@@ -353,11 +359,10 @@ def authorizer_view(user):
                     c1, c2, c3 = st.columns(3)
                     with c1: 
                         e_md=st.text_input("MD", row['md_ref'])
-                        
-                        # COMM MATH
-                        st.caption("Commission Calculation")
+                        # NEW: COMM + PENDING COMM
                         base_comm = st.number_input("Base Comm", value=float(row['comm_amount']))
                         pend_comm = st.number_input("Pending Comm (+)", value=0.0)
+                        st.caption(f"Total will be: {base_comm + pend_comm}")
                         
                         e_chg=st.text_input("Comm CHG", row['comm_chg_ref'])
                     with c2: 
@@ -372,7 +377,7 @@ def authorizer_view(user):
                     reas = st.text_input("Reason")
                     
                     if st.form_submit_button("Execute"):
-                        total_comm_calc = base_comm + pend_comm # SUM
+                        total_comm_calc = base_comm + pend_comm 
                         
                         df.at[idx,'md_ref']=e_md; df.at[idx,'comm_amount']=total_comm_calc; df.at[idx,'comm_status']=e_st
                         df.at[idx,'comm_chg_ref']=e_chg; df.at[idx,'cbe_serial']=e_cbe
@@ -380,7 +385,7 @@ def authorizer_view(user):
                         
                         if dec=="Approve":
                             df.at[idx,'status']='Completed'
-                            save_data(df); st.success(f"Approved! Total Comm: {total_comm_calc}"); time.sleep(1); st.rerun()
+                            save_data(df); st.success(f"Approved! Comm: {total_comm_calc}"); time.sleep(1); st.rerun()
                         else:
                             df.at[idx,'status']='Pending' if dec=="Pending" else 'Active'
                             df.at[idx,'pending_reason']=reas; save_data(df); st.rerun()
@@ -409,28 +414,25 @@ def authorizer_view(user):
                     df.at[idx,'status']='Active' if dest=="Inputter" else 'Ready for Auth'
                     save_data(df); st.rerun()
 
-    # 5. DAILY REPORTS (NEW)
+    # 5. DAILY REPORTS (FIXED: No Crashes)
     with tabs[4]:
         st.subheader(f"📊 Daily Report: {today_str}")
-        
         today_df = df[df['assigned_date'] == today_str]
         
         if not today_df.empty:
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total Transactions", len(today_df))
             
-            # Calc Total Comm
-            total_comm_today = today_df['comm_amount'].sum()
-            m2.metric("Total Comm Collected", f"{total_comm_today:,.2f}")
+            # SAFE SUM CALCULATION
+            total_comm = today_df['comm_amount'].sum()
+            m2.metric("Total Comm", f"{total_comm:,.2f}")
             
-            # Modes
             top_inp = today_df['inputter'].mode()[0] if not today_df['inputter'].mode().empty else "N/A"
             top_auth = today_df['authorizer'].mode()[0] if not today_df['authorizer'].mode().empty else "N/A"
             m3.metric("Top Inputter", top_inp)
             m4.metric("Top Authorizer", top_auth)
             
             st.divider()
-            
             c_r1, c_r2 = st.columns(2)
             with c_r1:
                 st.markdown("**By Request Type**")
@@ -441,7 +443,7 @@ def authorizer_view(user):
         else:
             st.info("No transactions today.")
 
-    # 6. MASTER MANAGER (UPDATED WITH NEW FIELDS)
+    # 6. MASTER MANAGER (ALL FIELDS)
     with tabs[5]:
         st.subheader("🛠️ Master Task Manager")
         search_q = st.text_input("Search Anything:", placeholder="LG, CIF, etc.")
@@ -458,13 +460,13 @@ def authorizer_view(user):
                     idx = df[df['task_id']==sel_m_id].index[0]; row = df.iloc[idx]
                     
                     with st.form("master_edit"):
-                        # ALL FIELDS
                         mc1, mc2, mc3 = st.columns(3)
                         with mc1:
                             m_stat = st.selectbox("Status", ["Active", "Ready for Auth", "Pending", "Completed"], index=get_index(["Active", "Ready for Auth", "Pending", "Completed"], row['status']))
                             m_auth = st.selectbox("Authorizer", get_users_by_role("Authorizer"), index=get_index(get_users_by_role("Authorizer"), row['authorizer']))
-                            m_post = st.text_input("Postage 1", row['postage_number']) # Can handle multi via text
-                            m_post2 = st.text_input("Postage 2 (Optional)", "") # Extra field, can append to Postage 1 if needed or just display
+                            # POSTAGE 1 & 2
+                            m_post = st.text_input("Postage 1", row['postage_number']) 
+                            m_post2 = st.text_input("Postage 2 (Append)", "") 
                             m_start = st.text_input("To be done on", row['to_be_started_on'])
                         with mc2:
                             m_inp = st.selectbox("Inputter", get_users_by_role("Inputter"), index=get_index(get_users_by_role("Inputter"), row['inputter']))
@@ -486,7 +488,7 @@ def authorizer_view(user):
                                     new_df = df[df['task_id'] != sel_m_id]
                                     save_data(new_df); st.success("Deleted!"); time.sleep(1); st.rerun()
                                 else:
-                                    # Combine postage if needed or just save 1
+                                    # Combine Postage
                                     final_post = m_post + (f" | {m_post2}" if m_post2 else "")
                                     df.at[idx,'status']=m_stat; df.at[idx,'authorizer']=m_auth; df.at[idx,'postage_number']=final_post
                                     df.at[idx,'inputter']=m_inp; df.at[idx,'cbe_serial']=m_cbe; df.at[idx,'md_ref']=m_md
@@ -530,8 +532,9 @@ def authorizer_view(user):
                         save_data(df); st.rerun()
             else: st.success("All originals received.")
 
-    # 8. DATABASE (Master Table Back)
+    # 8. DATABASE
     with tabs[7]: 
+        st.subheader("📊 Master Database")
         st.dataframe(df, use_container_width=True)
 
 def inputter_view(user):
