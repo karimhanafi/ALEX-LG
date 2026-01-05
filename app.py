@@ -211,7 +211,7 @@ def generate_daily_stats(df):
 
 def authorizer_view(user):
     # ADMIN OVERRIDE TITLE
-    if user == "Admin": st.title("🛡️ Authorizer Mode (GOD MODE)")
+    if user == "Admin": st.title("🛡️ Authorizer Mode (SUPER MODE)")
     else: st.title(f"🛡️ Authorizer: {user}")
     
     df = load_data()
