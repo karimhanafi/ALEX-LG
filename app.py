@@ -40,7 +40,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. GOOGLE SHEETS ENGINE
+# 2. GOOGLE SHEETS ENGINE (WITH SAFETY GUARD)
 # ==========================================
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
@@ -112,11 +112,23 @@ def load_data():
 
 def save_data(df):
     try:
+        # --- 🚨 SAFETY GUARD: ANTI-WIPE PROTECTION ---
+        if df.empty or len(df) == 0:
+            st.warning("⚠️ Safety Triggered: Attempted to save empty data. Operation cancelled.")
+            return
+
         wks = get_main_sheet()
         if wks:
+            try:
+                curr_vals = wks.get_all_values()
+            except:
+                st.error("⚠️ Connection Lost. Cannot save right now. Please refresh.")
+                return
+
             wks.clear()
             df['file_sent'] = df['file_sent'].apply(lambda x: 1 if float(x)>0 else 0)
             df['original_recvd'] = df['original_recvd'].apply(lambda x: 1 if float(x)>0 else 0)
+            
             df_clean = df.fillna("")
             wks.append_row(df_clean.columns.tolist())
             wks.append_rows(df_clean.values.tolist())
@@ -210,23 +222,18 @@ def generate_daily_stats(df):
 # ==========================================
 
 def authorizer_view(user):
-    # ADMIN OVERRIDE TITLE
-    if user == "Admin": st.title("🛡️ Authorizer Mode (SUPER MODE)")
+    if user == "Admin": st.title("🛡️ Authorizer Mode (Super Mode)")
     else: st.title(f"🛡️ Authorizer: {user}")
     
     df = load_data()
     today_str = get_current_date()
-    daily = len(df[df['assigned_date'] == today_str])
     pends = df[df['status'] == 'Pending']
     
-    # GOD MODE LOGIC: Admin sees ALL ready tasks, Normal users see only theirs
-    if user == "Admin":
-        my_ready = len(df[df['status'] == 'Ready for Auth'])
-    else:
-        my_ready = len(df[(df['authorizer'] == user) & (df['status'] == 'Ready for Auth')])
+    if user == "Admin": my_ready = len(df[df['status'] == 'Ready for Auth'])
+    else: my_ready = len(df[(df['authorizer'] == user) & (df['status'] == 'Ready for Auth')])
     
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Today's LGs", daily)
+    c1.metric("Today's LGs", len(df[df['assigned_date'] == today_str]))
     c2.metric("Global Pending", len(pends))
     c3.metric("Action Required", my_ready)
     c4.metric("Total DB", len(df))
@@ -246,9 +253,7 @@ def authorizer_view(user):
                 d_ben=str(last['beneficiary']); d_fav=str(last.get('in_favor_of', ''))
                 d_curr=str(last['currency']); d_type=str(last['lg_type'])
                 d_md=str(last['md_ref']); d_req=str(last['req_type'])
-                try: 
-                    raw_curr = str(last['current_total']).replace(",","").strip()
-                    prev_tot = float(raw_curr)
+                try: prev_tot = float(str(last['current_total']).replace(",","").strip())
                 except: prev_tot = 0.0
                 if prev_tot == 0:
                     try: prev_tot = float(str(last['amount']).replace(",","").strip()) 
@@ -259,12 +264,16 @@ def authorizer_view(user):
         col1, col2, col3 = st.columns(3)
         with col1:
             br_opts = get_unique(df, "branch") + ["New"]; br = st.selectbox("Branch", br_opts, index=get_index(br_opts, d_br))
-            if br=="New": br=st.text_input("New Branch")
+            if br=="New": 
+                br=st.text_input("New Branch")
+                if br and br in df['branch'].values: st.warning("⚠️ Exists in DB!")
             
             sel_app_idx = get_index(get_unique(df, "applicant") + ["New"], d_app)
             app_opts = get_unique(df, "applicant") + ["New"]
             app = st.selectbox("Applicant", app_opts, index=sel_app_idx)
-            if app=="New": app=st.text_input("New Applicant")
+            if app=="New": 
+                app=st.text_input("New Applicant")
+                if app and app in df['applicant'].values: st.warning("⚠️ Exists in DB!")
             
             derived_cif = d_cif
             if app != "New" and app in df['applicant'].values:
@@ -273,11 +282,15 @@ def authorizer_view(user):
             
             cif_opts = get_unique(df, "cif") + ["New"]
             cif = st.selectbox("CIF", cif_opts, index=get_index(cif_opts, derived_cif))
-            if cif=="New": cif=st.text_input("New CIF")
+            if cif=="New": 
+                cif=st.text_input("New CIF")
+                if cif and cif in df['cif'].values: st.warning("⚠️ Exists in DB!")
             
         with col2:
             ben_opts = get_unique(df, "beneficiary") + ["New"]; ben = st.selectbox("Beneficiary", ben_opts, index=get_index(ben_opts, d_ben))
-            if ben=="New": ben=st.text_input("New Beneficiary")
+            if ben=="New": 
+                ben=st.text_input("New Beneficiary")
+                if ben and ben in df['beneficiary'].values: st.warning("⚠️ Exists in DB!")
             fav_opts = get_unique(df, "in_favor_of") + ["New"]
             fav = st.selectbox("In Favor Of", fav_opts, index=get_index(fav_opts, d_fav))
             if fav=="New": fav=st.text_input("New In Favor Of")
@@ -342,7 +355,7 @@ def authorizer_view(user):
             with st.form("edit_active"):
                 c1, c2, c3 = st.columns(3)
                 all_inps = get_users_by_role("Inputter")
-                with c1: n_inp=st.selectbox("Inputter", all_inps, index=get_index(all_inps, row['inputter'])); n_md=st.text_input("MD", row['md_ref']); n_chg=st.text_input("Comm CHG", row['comm_chg_ref'])
+                with c1: n_inp=st.selectbox("Inputter", all_inps, index=get_index(all_inps, row['inputter'])); n_md=st.text_input("MD Ref", row['md_ref']); n_chg=st.text_input("Comm CHG Ref", row['comm_chg_ref'])
                 with c2: n_cbe=st.text_input("CBE", row['cbe_serial']); n_comm=st.number_input("Comm Amt", value=float(row['comm_amount'])); n_fs=st.checkbox("File Sent", value=(float(row['file_sent'])==1))
                 with c3: n_stat=st.selectbox("Status", COMM_OPTS, index=get_index(COMM_OPTS, row['comm_status'])); n_pno=st.text_input("Postage", row['postage_number'])
                 if st.form_submit_button("Save Changes"):
@@ -357,11 +370,8 @@ def authorizer_view(user):
                     save_data(new_df); st.success("Deleted!"); time.sleep(1); st.rerun()
 
     with tabs[2]: # REVIEW
-        # GOD MODE LOGIC: Admin sees all ready tasks
-        if user == "Admin":
-            my_tasks = df[df['status']=='Ready for Auth']
-        else:
-            my_tasks = df[(df['authorizer']==user) & (df['status']=='Ready for Auth')]
+        if user == "Admin": my_tasks = df[df['status']=='Ready for Auth']
+        else: my_tasks = df[(df['authorizer']==user) & (df['status']=='Ready for Auth')]
             
         if my_tasks.empty: st.info("Nothing to approve")
         else:
@@ -372,11 +382,11 @@ def authorizer_view(user):
                     st.write(f"Actioning: **{row['lg_number']}** | {row['req_type']}")
                     c1, c2, c3 = st.columns(3)
                     with c1: 
-                        e_md=st.text_input("MD", row['md_ref'])
+                        e_md=st.text_input("MD Ref", row['md_ref'])
                         base_comm = st.number_input("Base Comm", value=float(row['comm_amount']))
                         pend_comm = st.number_input("Pending Comm (+)", value=0.0)
                         st.caption(f"Total: {base_comm + pend_comm}")
-                        e_chg=st.text_input("Comm CHG", row['comm_chg_ref'])
+                        e_chg=st.text_input("Comm CHG Ref", row['comm_chg_ref'])
                     with c2: 
                         e_cbe=st.text_input("CBE Serial", row['cbe_serial'])
                         e_st=st.selectbox("Comm Stat", COMM_OPTS, index=get_index(COMM_OPTS, row['comm_status']))
@@ -398,15 +408,15 @@ def authorizer_view(user):
                             df.at[idx,'status']='Pending' if dec=="Pending" else 'Active'
                             df.at[idx,'pending_reason']=reas; save_data(df); st.rerun()
 
-    with tabs[3]: # PENDINGS (God Mode logic is implicit because global pendings shows all)
+    with tabs[3]: # PENDINGS
         st.dataframe(pends[['lg_number','pending_reason','inputter','authorizer']], use_container_width=True)
         for i, row in pends.iterrows():
             with st.expander(f"Manage {row['lg_number']} ({row['authorizer']})"):
                 c1, c2 = st.columns(2)
                 with c1: 
-                    n_md = st.text_input("MD", row['md_ref'], key=f"p_md{i}")
+                    n_md = st.text_input("MD Ref", row['md_ref'], key=f"p_md{i}")
                     n_cbe = st.text_input("CBE", row['cbe_serial'], key=f"p_cb{i}")
-                    n_comm = st.text_input("Comm", row['comm_amount'], key=f"p_cm{i}")
+                    n_comm = st.text_input("Comm Amt", row['comm_amount'], key=f"p_cm{i}")
                 with c2:
                     n_fs = st.checkbox("File Sent", value=(float(row['file_sent'])==1), key=f"p_fs{i}")
                     n_or = st.checkbox("Orig Recvd", value=(float(row['original_recvd'])==1), key=f"p_or{i}")
@@ -454,11 +464,11 @@ def authorizer_view(user):
                         with mc2:
                             m_inp = st.selectbox("Inputter", get_users_by_role("Inputter"), index=get_index(get_users_by_role("Inputter"), row['inputter']))
                             m_cbe = st.text_input("CBE", row['cbe_serial'])
-                            m_md = st.text_input("MD", row['md_ref'])
+                            m_md = st.text_input("MD Ref", row['md_ref'])
                             m_amt = st.number_input("Amount", float(row['amount']))
                         with mc3:
                             m_comm = st.number_input("Comm Amt", float(row['comm_amount']))
-                            m_chg = st.text_input("Comm CHG", row['comm_chg_ref'])
+                            m_chg = st.text_input("Comm CHG Ref", row['comm_chg_ref'])
                             m_curr = st.number_input("Current Total", float(row['current_total']))
                             m_fs = st.checkbox("File Sent", value=(float(row['file_sent'])==1))
                             m_or = st.checkbox("Orig Recvd", value=(float(row['original_recvd'])==1))
@@ -513,13 +523,10 @@ def authorizer_view(user):
     with tabs[7]: st.dataframe(df, use_container_width=True)
 
 def inputter_view(user):
-    # ADMIN OVERRIDE TITLE
-    if user == "Admin": st.title("⚡ Inputter Mode (GOD MODE)")
+    if user == "Admin": st.title("⚡ Inputter Mode (Super Mode)")
     else: st.title(f"⚡ Inputter: {user}")
     
     df = load_data()
-    
-    # GOD MODE LOGIC: Admin sees everything active/pending for all users
     if user == "Admin":
         act = df[df['status']=='Active']
         mine = df[df['status']=='Pending']
@@ -531,39 +538,16 @@ def inputter_view(user):
     tabs = st.tabs(["Tasks", "Watchlist", "Doc Tracking"])
 
     with tabs[0]:
+        st.write("#### 📋 Your Active Tasks (Read-Only)")
         if not act.empty:
             st.dataframe(act[['lg_number','req_type', 'beneficiary', 'amount']], use_container_width=True)
-            sel_id = smart_select_task("Process Task", act, "inp_act_sel")
-            if sel_id:
-                idx = df[df['task_id']==sel_id].index[0]; row = df.iloc[idx]
-                st.info(f"ℹ️ Base: {row['amount']} | New Total: {row['current_total']}")
-                auths_list = get_users_by_role("Authorizer")
-                cur_auth = row['authorizer']
-                c_md, c_auth = st.columns(2)
-                with c_md: new_md = st.text_input("MD Ref", value=row['md_ref'])
-                with c_auth: n_auth = st.selectbox("To Authorizer", auths_list, index=get_index(auths_list, cur_auth))
-                c1, c2 = st.columns(2)
-                if c1.button("✅ Send"):
-                    df.at[idx,'status']='Ready for Auth'; df.at[idx,'authorizer']=n_auth; df.at[idx,'md_ref']=new_md
-                    save_data(df); st.rerun()
-                reas = c2.text_input("Pending Reason")
-                if c2.button("Mark Pending"):
-                    df.at[idx,'status']='Pending'; df.at[idx,'pending_reason']=reas; save_data(df); st.rerun()
-        else: st.info("Done!")
+        else: st.info("No active tasks found.")
 
     with tabs[1]:
+        st.write("#### ⏳ Your Pending Tasks (Read-Only)")
         if not mine.empty:
-            sel_id = smart_select_task("Fix Task", mine, "inp_watch_sel")
-            if sel_id:
-                idx = df[df['task_id']==sel_id].index[0]; row = df.iloc[idx]
-                with st.form("fix"):
-                    n_md=st.text_input("MD", row['md_ref']); n_st=st.selectbox("Stat", COMM_OPTS, index=get_index(COMM_OPTS, row['comm_status']))
-                    n_chg=st.text_input("Comm CHG", row['comm_chg_ref'])
-                    if st.form_submit_button("Resubmit"):
-                        df.at[idx,'md_ref']=n_md; df.at[idx,'comm_status']=n_st; df.at[idx,'comm_chg_ref']=n_chg
-                        df.at[idx,'status']='Ready for Auth'
-                        save_data(df); st.rerun()
-        else: st.info("Empty")
+            st.dataframe(mine[['lg_number', 'pending_reason', 'authorizer']], use_container_width=True)
+        else: st.info("Watchlist Empty")
 
     with tabs[2]:
         st.subheader("📦 Document Tracking")
@@ -597,7 +581,7 @@ def inputter_view(user):
 
 def admin_view():
     st.title("⚙️ Admin Panel")
-    tabs = st.tabs(["👥 User Management", "🦹 Super User Mode", "📊 Database"])
+    tabs = st.tabs(["👥 User Management", "🦹 Super Mode", "📊 Database"])
     
     with tabs[0]: # USERS
         st.subheader("Manage Users")
@@ -633,7 +617,7 @@ def admin_view():
                 else: st.error("Error")
 
     with tabs[1]: # SUPER MODE
-        st.subheader("🦹 Super User Mode")
+        st.subheader("🦹 Super Mode")
         st.info("Viewing as GLOBAL ADMIN (Access to all tasks)")
         mode = st.radio("Switch View:", ["Authorizer Mode", "Inputter Mode"], horizontal=True)
         if mode == "Authorizer Mode": authorizer_view("Admin")
